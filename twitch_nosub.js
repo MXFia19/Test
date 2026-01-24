@@ -21,18 +21,18 @@ function formatDate(isoString) {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-// --- 1. RECHERCHE (Uniquement les VODs) ---
+// --- 1. RECHERCHE (Avec Tri par Date Forcé) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On ne demande plus le "stream" (live), seulement les vidéos
+        // On demande explicitement le tri par TEMPS (sort: TIME) et type ARCHIVE
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
                     login
                     displayName
-                    videos(first: 20) {
+                    videos(first: 20, type: ARCHIVE, sort: TIME) {
                         edges {
                             node {
                                 id
@@ -52,10 +52,16 @@ async function searchResults(keyword) {
 
         if (!user) return JSON.stringify([]);
 
-        const results = [];
+        // Récupération des données brutes
+        let edges = user.videos?.edges || [];
 
-        // On traite uniquement la liste des vidéos
-        const edges = user.videos?.edges || [];
+        // TRI JAVASCRIPT DE SÉCURITÉ
+        // On classe du plus récent (Date b) au plus vieux (Date a)
+        edges.sort((a, b) => {
+            return new Date(b.node.publishedAt) - new Date(a.node.publishedAt);
+        });
+
+        const results = [];
         edges.forEach(edge => {
             const video = edge.node;
             const dateStr = formatDate(video.publishedAt);
@@ -84,10 +90,9 @@ async function searchResults(keyword) {
     }
 }
 
-// --- 2. DÉTAILS (Uniquement pour les VODs) ---
+// --- 2. DÉTAILS ---
 async function extractDetails(url) {
     try {
-        // On ne traite que les URLs contenant "/videos/"
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             const videoId = match ? match[1] : "";
@@ -115,7 +120,6 @@ async function extractDetails(url) {
                     const mins = Math.floor((video.lengthSeconds || 0) / 60);
                     const rawDesc = safeText(video.description);
                     
-                    // Description formatée
                     const fullDesc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} vues\n\n${rawDesc}`;
 
                     return JSON.stringify([{
@@ -127,9 +131,7 @@ async function extractDetails(url) {
                 }
             }
         }
-
         return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]);
-
     } catch (error) {
         return JSON.stringify([{ description: 'Erreur chargement', author: 'Twitch', date: '' }]);
     }
@@ -147,20 +149,19 @@ async function extractEpisodes(url) {
     } catch (error) { return JSON.stringify([]); }
 }
 
-// --- 4. STREAM (Uniquement VOD NoSub/Officiel) ---
+// --- 4. STREAM ---
 async function extractStreamUrl(url) {
     try {
         let streams = [];
-        
-        // Extraction ID VOD uniquement
         let videoId = "";
+
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             if (match) videoId = match[1];
         }
 
         if (videoId) {
-            // 1. NoSub (Priorité : Hack Storyboard)
+            // 1. NoSub (Priorité)
             try {
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
@@ -178,7 +179,7 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
 
-            // 2. Officiel (Backup : Token classique)
+            // 2. Officiel (Backup)
             try {
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
