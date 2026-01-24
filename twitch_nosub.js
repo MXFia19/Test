@@ -9,18 +9,24 @@ const HEADERS = {
     'Content-Type': 'application/json'
 };
 
-// --- FONCTION DE SÉCURITÉ ---
+// --- OUTILS ---
 function safeText(str) {
     if (!str) return "";
     return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
 }
 
-// --- 1. RECHERCHE (AFFICHE LES VODS DIRECTEMENT) ---
+function formatDate(isoString) {
+    if (!isoString) return "Inconnu";
+    const d = new Date(isoString);
+    // Force le format Jour/Mois/Année (ex: 24/01/2025)
+    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+// --- 1. RECHERCHE (Affiche les 20 dernières VODs) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On demande directement les vidéos au lieu juste du profil
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -46,18 +52,11 @@ async function searchResults(keyword) {
 
         const results = edges.map(edge => {
             const video = edge.node;
+            const dateStr = formatDate(video.publishedAt);
             
-            // Date pour le sous-titre ou titre de secours
-            let dateStr = "";
-            if (video.publishedAt) {
-                dateStr = new Date(video.publishedAt).toLocaleDateString();
-            }
-
-            // Titre sécurisé
             let title = safeText(video.title);
             if (!title) title = `VOD du ${dateStr}`;
 
-            // Image HD
             let img = video.previewThumbnailURL;
             if (img && !img.includes("404_preview")) {
                 img = img.replace("{width}", "1280").replace("{height}", "720");
@@ -68,9 +67,10 @@ async function searchResults(keyword) {
             return {
                 title: title,
                 image: img,
-                // IMPORTANT : On garde le login du user comme lien.
-                // Cliquer sur une VOD dans la recherche ouvrira la page de la chaîne (liste des épisodes).
-                href: user.login 
+                // ASTUCE : On ajoute l'ID de la vidéo à l'URL pour la rendre unique
+                // L'app affichera donc bien 20 résultats distincts.
+                // On sépare par un '|' pour pouvoir retrouver le login après.
+                href: `${user.login}|${video.id}` 
             };
         });
 
@@ -79,26 +79,33 @@ async function searchResults(keyword) {
 }
 
 // --- 2. DÉTAILS ---
-async function extractDetails(login) {
+async function extractDetails(idStr) {
     try {
+        // On récupère juste le login (avant le '|')
+        const login = idStr.split('|')[0];
+
         const query = { query: `query { user(login: "${login}") { description createdAt } }` };
         const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
         const json = await responseText.json();
         const user = json.data?.user;
         
         const desc = safeText(user?.description || 'Chaine Twitch');
+        const creationDate = formatDate(user?.createdAt);
 
         return JSON.stringify([{
             description: desc,
             aliases: 'Twitch',
-            airdate: user?.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'Inconnu'
+            airdate: creationDate // Date de création de la chaîne (info "Série")
         }]);
     } catch (error) { return JSON.stringify([{ description: 'Info indisponible', aliases: '', airdate: '' }]); }
 }
 
 // --- 3. ÉPISODES ---
-async function extractEpisodes(login) {
+async function extractEpisodes(idStr) {
     try {
+        // On récupère juste le login (avant le '|') pour charger TOUTE la liste
+        const login = idStr.split('|')[0];
+        
         const episodes = [];
 
         // LIVE
@@ -138,13 +145,11 @@ async function extractEpisodes(login) {
 
             edges.forEach((edge, index) => {
                 const video = edge.node;
-                let dateStr = "Inconnu";
-                if (video.publishedAt) {
-                    let d = new Date(video.publishedAt);
-                    dateStr = d.toLocaleDateString(); 
-                }
+                const dateStr = formatDate(video.publishedAt);
+                
                 let realTitle = safeText(video.title);
                 if (!realTitle) { realTitle = `VOD du ${dateStr}`; }
+
                 let imgUrl = video.previewThumbnailURL;
                 if (!imgUrl || imgUrl.includes("404_preview")) {
                     imgUrl = "https://vod-secure.twitch.tv/_404/404_preview-640x360.jpg";
