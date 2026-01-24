@@ -18,17 +18,20 @@ function safeText(str) {
 function formatDateISO(isoString) {
     if (!isoString) return "0000-00-00";
     const d = new Date(isoString);
+    if (isNaN(d.getTime())) return "0000-00-00";
+    
     const year = d.getFullYear();
     const month = (d.getMonth() + 1).toString().padStart(2, '0');
     const day = d.getDate().toString().padStart(2, '0');
     return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE (Avec Numérotation 01, 02...) ---
+// --- 1. RECHERCHE (Tri Strict sans Numéros) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
+        // On demande à Twitch de trier par date, mais on ne leur fait pas confiance à 100%
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -55,27 +58,24 @@ async function searchResults(keyword) {
         if (!user) return JSON.stringify([]);
 
         let edges = user.videos?.edges || [];
-        
-        // 1. TRI CHRONOLOGIQUE (Plus récent en premier)
+
+        // --- TRI OBLIGATOIRE DANS LE CODE ---
+        // On trie du plus récent au plus ancien AVANT de créer le résultat final
         edges.sort((a, b) => {
-            return new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime();
+            const dateA = new Date(a.node.publishedAt).getTime() || 0;
+            const dateB = new Date(b.node.publishedAt).getTime() || 0;
+            return dateB - dateA; // Descendant (Plus grand = plus récent en premier)
         });
 
-        // 2. CONSTRUCTION AVEC NUMÉROTATION
-        const results = edges.map((edge, index) => {
+        const results = edges.map(edge => {
             const video = edge.node;
             const dateStr = formatDateISO(video.publishedAt);
             
-            // On crée un numéro "01", "02", "03"... basé sur la position dans la liste triée
-            // (index + 1) car l'index commence à 0
-            const number = (index + 1).toString().padStart(2, '0');
-
             let rawTitle = safeText(video.title);
             if (!rawTitle) rawTitle = "VOD Sans Titre";
 
-            // Titre formaté : "01. [Date] Titre"
-            // L'app va trier par "01", puis "02", etc.
-            const displayTitle = `${number}. [${dateStr}] ${rawTitle}`;
+            // On garde juste la date entre crochets pour l'info, mais SANS numéro 01, 02...
+            const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
             if (img && !img.includes("404_preview")) {
