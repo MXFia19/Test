@@ -53,14 +53,9 @@ async function searchResults(keyword) {
 
         const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
         const json = await responseText.json();
-        
-        if (json.errors) {
-            console.log(`[Twitch] GQL Error: ${JSON.stringify(json.errors)}`);
-        }
-
         const user = json.data?.user;
 
-        // --- ERROR: USER NOT FOUND ---
+        // --- CASE 1: USER NOT FOUND ---
         if (!user) {
             console.log(`[Twitch] User ${cleanKeyword} not found.`);
             return JSON.stringify([{
@@ -71,9 +66,20 @@ async function searchResults(keyword) {
         }
 
         let edges = user.videos?.edges || [];
+
+        // --- CASE 2: USER FOUND BUT NO VODS ---
+        if (edges.length === 0) {
+            console.log(`[Twitch] User found but 0 videos.`);
+            return JSON.stringify([{
+                title: `No videos found for ${user.displayName}.`,
+                image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
+                href: "ERROR_NO_VODS"
+            }]);
+        }
+
         console.log(`[Twitch] ${edges.length} videos found.`);
 
-        // --- SAFETY SORT (Newest First) ---
+        // --- CASE 3: DISPLAY VIDEOS (Safety Sort) ---
         edges.sort((a, b) => {
             return new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime();
         });
@@ -85,7 +91,6 @@ async function searchResults(keyword) {
             let rawTitle = safeText(video.title);
             if (!rawTitle) rawTitle = "Untitled VOD";
 
-            // Title format: [2026-01-24] My Title
             const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
@@ -117,12 +122,19 @@ async function searchResults(keyword) {
 // --- 2. DETAILS ---
 async function extractDetails(url) {
     try {
-        // Handle Error Message Click
-        if (url.startsWith("ERROR_")) {
+        // Handle Error Messages
+        if (url === "ERROR_NOT_FOUND") {
             return JSON.stringify([{
-                description: "The streamer you searched for does not exist or an error occurred.",
+                description: "The streamer you searched for does not exist on Twitch.",
                 author: "System",
                 date: "Error"
+            }]);
+        }
+        if (url === "ERROR_NO_VODS") {
+            return JSON.stringify([{
+                description: "This channel exists but has no archived videos (VODs) available.",
+                author: "System",
+                date: "Info"
             }]);
         }
 
