@@ -16,5 +16,6 @@
   "type": "movie",
   "downloadSupport": false,
   "asyncJS": true,
+  "description": "This module provides access to a wide range of content from YourSourceName.",
   "softsub": false
 }
