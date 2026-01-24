@@ -15,7 +15,6 @@ function safeText(str) {
     return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
 }
 
-// Format ISO pour forcer l'ordre (AAAA-MM-JJ)
 function formatDateISO(isoString) {
     if (!isoString) return "0000-00-00";
     const d = new Date(isoString);
@@ -25,12 +24,12 @@ function formatDateISO(isoString) {
     return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE (Trié par date décroissante) ---
+// --- 1. RECHERCHE (Tri Final Force) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On demande à Twitch de trier par TEMPS (TIME)
+        // 1. On récupère les VODs (Archives)
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -56,25 +55,18 @@ async function searchResults(keyword) {
 
         if (!user) return JSON.stringify([]);
 
-        // Récupération des vidéos
         let edges = user.videos?.edges || [];
-
-        // --- TRI MANUEL ROBUSTE (Du plus Récent au plus Vieux) ---
-        edges.sort((a, b) => {
-            const dateA = new Date(a.node.publishedAt).getTime();
-            const dateB = new Date(b.node.publishedAt).getTime();
-            return dateB - dateA; // Inverser ici (dateA - dateB) si tu veux du plus vieux au plus récent
-        });
-
-        const results = [];
-        edges.forEach(edge => {
+        
+        // 2. On construit d'abord une liste temporaire avec un champ de tri (timestamp)
+        let tempResults = edges.map(edge => {
             const video = edge.node;
-            const dateStr = formatDateISO(video.publishedAt); // Ex: 2025-01-24
+            const dateStr = formatDateISO(video.publishedAt);
+            const timestamp = new Date(video.publishedAt).getTime(); // Pour le tri mathématique
             
             let rawTitle = safeText(video.title);
             if (!rawTitle) rawTitle = "VOD Sans Titre";
 
-            // On met la date AU DÉBUT du titre pour forcer l'ordre visuel et alphabétique
+            // Titre avec date au début : [2025-01-24] Titre
             const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
@@ -84,17 +76,29 @@ async function searchResults(keyword) {
                 img = "https://vod-secure.twitch.tv/_404/404_preview-640x360.jpg";
             }
 
-            results.push({
+            return {
                 title: displayTitle,
                 image: img,
-                href: `https://www.twitch.tv/videos/${video.id}`
-            });
+                href: `https://www.twitch.tv/videos/${video.id}`,
+                _sortKey: timestamp // Clé de tri cachée
+            };
         });
 
-        return JSON.stringify(results);
+        // 3. TRI FINAL : On trie la liste construite du plus grand timestamp (récent) au plus petit (vieux)
+        tempResults.sort((a, b) => b._sortKey - a._sortKey);
+
+        // 4. On nettoie la clé de tri avant d'envoyer
+        const finalResults = tempResults.map(item => {
+            return {
+                title: item.title,
+                image: item.image,
+                href: item.href
+            };
+        });
+
+        return JSON.stringify(finalResults);
 
     } catch (error) {
-        console.log("Search Error: " + error);
         return JSON.stringify([]);
     }
 }
@@ -149,6 +153,7 @@ async function extractDetails(url) {
 // --- 3. ÉPISODES ---
 async function extractEpisodes(url) {
     try {
+        // En mode Movie, on renvoie un seul élément pour lancer la vidéo
         return JSON.stringify([{
             href: url,
             number: 1,
