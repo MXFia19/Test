@@ -26,12 +26,12 @@ function formatDateISO(isoString) {
     return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE (Naturelle - Sans tri forcé) ---
+// --- 1. RECHERCHE ---
 async function searchResults(keyword) {
+    console.log(`[Twitch] Recherche pour : ${keyword}`);
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On demande simplement à Twitch les archives triées par temps
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -53,14 +53,32 @@ async function searchResults(keyword) {
 
         const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
         const json = await responseText.json();
+        
+        // Log en cas d'erreur API
+        if (json.errors) {
+            console.log(`[Twitch] Erreur GQL: ${JSON.stringify(json.errors)}`);
+        }
+
         const user = json.data?.user;
 
-        if (!user) return JSON.stringify([]);
+        // --- GESTION "INTROUVABLE" ---
+        if (!user) {
+            console.log(`[Twitch] Utilisateur ${cleanKeyword} introuvable.`);
+            return JSON.stringify([{
+                title: "Streamer introuvable. Vérifiez l'orthographe.",
+                image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
+                href: "ERROR_NOT_FOUND"
+            }]);
+        }
 
-        const edges = user.videos?.edges || [];
+        let edges = user.videos?.edges || [];
+        console.log(`[Twitch] ${edges.length} vidéos trouvées.`);
 
-        // PAS DE TRI JAVASCRIPT ICI
-        // On prend la liste telle qu'elle arrive de Twitch
+        // --- TRI DE SÉCURITÉ (OBLIGATOIRE) ---
+        // Même si Twitch dit trier, on retrie par date décroissante pour être sûr à 100%
+        edges.sort((a, b) => {
+            return new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime();
+        });
 
         const results = edges.map(edge => {
             const video = edge.node;
@@ -69,7 +87,7 @@ async function searchResults(keyword) {
             let rawTitle = safeText(video.title);
             if (!rawTitle) rawTitle = "VOD Sans Titre";
 
-            // Affichage simple : [Date] Titre
+            // Titre propre : [2026-01-24] Mon Titre
             const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
@@ -89,13 +107,27 @@ async function searchResults(keyword) {
         return JSON.stringify(results);
 
     } catch (error) {
-        return JSON.stringify([]);
+        console.log(`[Twitch] Crash : ${error}`);
+        return JSON.stringify([{
+            title: "Erreur technique. Vérifiez les logs.",
+            image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
+            href: "ERROR_CRASH"
+        }]);
     }
 }
 
 // --- 2. DÉTAILS ---
 async function extractDetails(url) {
     try {
+        // Si c'est le message d'erreur
+        if (url.startsWith("ERROR_")) {
+            return JSON.stringify([{
+                description: "Le streamer recherché n'existe pas ou une erreur est survenue.",
+                author: "Système",
+                date: "Erreur"
+            }]);
+        }
+
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             const videoId = match ? match[1] : "";
@@ -143,6 +175,8 @@ async function extractDetails(url) {
 // --- 3. ÉPISODES ---
 async function extractEpisodes(url) {
     try {
+        if (url.startsWith("ERROR_")) return JSON.stringify([]);
+
         return JSON.stringify([{
             href: url,
             number: 1,
@@ -156,15 +190,17 @@ async function extractEpisodes(url) {
 async function extractStreamUrl(url) {
     try {
         let streams = [];
-        let videoId = "";
+        
+        if (url.startsWith("ERROR_")) return JSON.stringify({ streams: [], subtitles: [] });
 
+        let videoId = "";
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             if (match) videoId = match[1];
         }
 
         if (videoId) {
-            // 1. NoSub (Priorité)
+            // 1. NoSub
             try {
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
@@ -182,7 +218,7 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
 
-            // 2. Officiel (Backup)
+            // 2. Officiel
             try {
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
