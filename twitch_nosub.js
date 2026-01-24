@@ -18,7 +18,6 @@ function safeText(str) {
 function formatDate(isoString) {
     if (!isoString) return "Inconnu";
     const d = new Date(isoString);
-    // Force le format Jour/Mois/Année (ex: 24/01/2025)
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
@@ -67,9 +66,7 @@ async function searchResults(keyword) {
             return {
                 title: title,
                 image: img,
-                // ASTUCE : On ajoute l'ID de la vidéo à l'URL pour la rendre unique
-                // L'app affichera donc bien 20 résultats distincts.
-                // On sépare par un '|' pour pouvoir retrouver le login après.
+                // On passe l'ID complet pour que extractDetails sache quoi afficher
                 href: `${user.login}|${video.id}` 
             };
         });
@@ -78,99 +75,78 @@ async function searchResults(keyword) {
     } catch (error) { return JSON.stringify([]); }
 }
 
-// --- 2. DÉTAILS ---
+// --- 2. DÉTAILS (VERSION MOVIE : Info de la VOD précise) ---
 async function extractDetails(idStr) {
     try {
-        // On récupère juste le login (avant le '|')
-        const login = idStr.split('|')[0];
+        const parts = idStr.split('|');
+        const login = parts[0];
+        const videoId = parts[1]; // L'ID de la vidéo cliquée
 
-        const query = { query: `query { user(login: "${login}") { description createdAt } }` };
+        // Si c'est un LIVE
+        if (videoId.startsWith("LIVE_")) {
+             return JSON.stringify([{
+                description: "Diffusion en direct sur Twitch",
+                author: login,
+                date: "Aujourd'hui"
+            }]);
+        }
+
+        // Si c'est une VOD, on demande les infos précises de CETTE vidéo
+        const query = {
+            query: `query {
+                video(id: "${videoId}") {
+                    title
+                    description
+                    publishedAt
+                    viewCount
+                    lengthSeconds
+                }
+            }`
+        };
+
         const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
         const json = await responseText.json();
-        const user = json.data?.user;
-        
-        const desc = safeText(user?.description || 'Chaine Twitch');
-        const creationDate = formatDate(user?.createdAt);
+        const video = json.data?.video;
+
+        let desc = safeText(video?.description || "Aucune description");
+        const dateStr = formatDate(video?.publishedAt);
+        const duration = Math.floor((video?.lengthSeconds || 0) / 60) + " min";
+        const views = video?.viewCount || 0;
+
+        // On construit une belle description pour la page du film
+        const fullDesc = `📅 Date: ${dateStr}\n⏱ Durée: ${duration}\n👁 Vues: ${views}\n\n${desc}`;
 
         return JSON.stringify([{
-            description: desc,
-            aliases: 'Twitch',
-            airdate: creationDate // Date de création de la chaîne (info "Série")
+            description: fullDesc,
+            author: login,
+            date: dateStr
         }]);
-    } catch (error) { return JSON.stringify([{ description: 'Info indisponible', aliases: '', airdate: '' }]); }
+
+    } catch (error) { 
+        return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]); 
+    }
 }
 
-// --- 3. ÉPISODES ---
+// --- 3. ÉPISODES (VERSION MOVIE : Lien direct vers la vidéo) ---
+// En mode Movie, cette fonction sert juste à dire "Voici le lien à lire"
 async function extractEpisodes(idStr) {
     try {
-        // On récupère juste le login (avant le '|') pour charger TOUTE la liste
-        const login = idStr.split('|')[0];
-        
+        const parts = idStr.split('|');
+        const login = parts[0];
+        const videoId = parts[1];
+
         const episodes = [];
-
-        // LIVE
-        try {
-            const queryLive = { query: `query { user(login: "${login}") { stream { id title game { name } previewImage { url } } } }` };
-            const respLive = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(queryLive) });
-            const jsonLive = await respLive.json();
-            const currentStream = jsonLive.data?.user?.stream;
-
-            if (currentStream) {
-                const gameName = safeText(currentStream.game?.name || "Jeu");
-                const liveTitle = safeText(currentStream.title || "Live en cours");
-                let liveImg = "https://pngimg.com/uploads/twitch/twitch_PNG13.png";
-                if (currentStream.previewImage?.url) {
-                    liveImg = currentStream.previewImage.url.replace("{width}", "1280").replace("{height}", "720");
-                }
-                episodes.push({
-                    href: "LIVE_" + login,
-                    number: 0,
-                    season: 1,
-                    title: "🔴 LIVE : " + liveTitle,
-                    name: "🔴 LIVE : " + liveTitle,
-                    image: liveImg,
-                    thumbnail: liveImg,
-                    duration: "LIVE",
-                    description: `Jeu : ${gameName}\n${liveTitle}`
-                });
-            }
-        } catch (e) {}
-
-        // VODS
-        try {
-            const queryVideos = { query: `query { user(login: "${login}") { videos(first: 20) { edges { node { id, title, publishedAt, lengthSeconds, previewThumbnailURL(height: 360, width: 640) } } } } }` };
-            const respVideos = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(queryVideos) });
-            const jsonVideos = await respVideos.json();
-            const edges = jsonVideos.data?.user?.videos?.edges || [];
-
-            edges.forEach((edge, index) => {
-                const video = edge.node;
-                const dateStr = formatDate(video.publishedAt);
-                
-                let realTitle = safeText(video.title);
-                if (!realTitle) { realTitle = `VOD du ${dateStr}`; }
-
-                let imgUrl = video.previewThumbnailURL;
-                if (!imgUrl || imgUrl.includes("404_preview")) {
-                    imgUrl = "https://vod-secure.twitch.tv/_404/404_preview-640x360.jpg";
-                } else {
-                    imgUrl = imgUrl.replace("{width}", "1280").replace("{height}", "720");
-                }
-                const minutes = Math.floor(video.lengthSeconds / 60);
-
-                episodes.push({
-                    href: video.id,
-                    number: index + 1,
-                    season: 1,
-                    title: realTitle,
-                    name: realTitle,
-                    image: imgUrl,
-                    thumbnail: imgUrl,
-                    duration: `${minutes} min`,
-                    description: `${realTitle}\nDiffusé le : ${dateStr}`
-                });
-            });
-        } catch (e) {}
+        
+        // On renvoie un seul "épisode" qui correspond au Film/VOD choisi
+        episodes.push({
+            href: videoId.startsWith("LIVE_") ? "LIVE_" + login : videoId,
+            number: 1,
+            season: 1,
+            title: "Regarder",
+            description: "Lancer la vidéo",
+            duration: "",
+            image: "" 
+        });
 
         return JSON.stringify(episodes);
     } catch (error) { return JSON.stringify([]); }
