@@ -9,7 +9,7 @@ const HEADERS = {
     'Content-Type': 'application/json'
 };
 
-// --- OUTILS ---
+// --- TOOLS ---
 function safeText(str) {
     if (!str) return "";
     return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
@@ -26,9 +26,9 @@ function formatDateISO(isoString) {
     return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE ---
+// --- 1. SEARCH ---
 async function searchResults(keyword) {
-    console.log(`[Twitch] Recherche pour : ${keyword}`);
+    console.log(`[Twitch] Searching for: ${keyword}`);
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
@@ -54,28 +54,26 @@ async function searchResults(keyword) {
         const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
         const json = await responseText.json();
         
-        // Log en cas d'erreur API
         if (json.errors) {
-            console.log(`[Twitch] Erreur GQL: ${JSON.stringify(json.errors)}`);
+            console.log(`[Twitch] GQL Error: ${JSON.stringify(json.errors)}`);
         }
 
         const user = json.data?.user;
 
-        // --- GESTION "INTROUVABLE" ---
+        // --- ERROR: USER NOT FOUND ---
         if (!user) {
-            console.log(`[Twitch] Utilisateur ${cleanKeyword} introuvable.`);
+            console.log(`[Twitch] User ${cleanKeyword} not found.`);
             return JSON.stringify([{
-                title: "Streamer introuvable. Vérifiez l'orthographe.",
+                title: "Streamer not found. Please check spelling.",
                 image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
                 href: "ERROR_NOT_FOUND"
             }]);
         }
 
         let edges = user.videos?.edges || [];
-        console.log(`[Twitch] ${edges.length} vidéos trouvées.`);
+        console.log(`[Twitch] ${edges.length} videos found.`);
 
-        // --- TRI DE SÉCURITÉ (OBLIGATOIRE) ---
-        // Même si Twitch dit trier, on retrie par date décroissante pour être sûr à 100%
+        // --- SAFETY SORT (Newest First) ---
         edges.sort((a, b) => {
             return new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime();
         });
@@ -85,9 +83,9 @@ async function searchResults(keyword) {
             const dateStr = formatDateISO(video.publishedAt);
             
             let rawTitle = safeText(video.title);
-            if (!rawTitle) rawTitle = "VOD Sans Titre";
+            if (!rawTitle) rawTitle = "Untitled VOD";
 
-            // Titre propre : [2026-01-24] Mon Titre
+            // Title format: [2026-01-24] My Title
             const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
@@ -107,24 +105,24 @@ async function searchResults(keyword) {
         return JSON.stringify(results);
 
     } catch (error) {
-        console.log(`[Twitch] Crash : ${error}`);
+        console.log(`[Twitch] Crash: ${error}`);
         return JSON.stringify([{
-            title: "Erreur technique. Vérifiez les logs.",
+            title: "Technical error. Check logs.",
             image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
             href: "ERROR_CRASH"
         }]);
     }
 }
 
-// --- 2. DÉTAILS ---
+// --- 2. DETAILS ---
 async function extractDetails(url) {
     try {
-        // Si c'est le message d'erreur
+        // Handle Error Message Click
         if (url.startsWith("ERROR_")) {
             return JSON.stringify([{
-                description: "Le streamer recherché n'existe pas ou une erreur est survenue.",
-                author: "Système",
-                date: "Erreur"
+                description: "The streamer you searched for does not exist or an error occurred.",
+                author: "System",
+                date: "Error"
             }]);
         }
 
@@ -155,7 +153,7 @@ async function extractDetails(url) {
                     const mins = Math.floor((video.lengthSeconds || 0) / 60);
                     const rawDesc = safeText(video.description);
                     
-                    const fullDesc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} vues\n\n${rawDesc}`;
+                    const fullDesc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} views\n\n${rawDesc}`;
 
                     return JSON.stringify([{
                         description: fullDesc,
@@ -166,13 +164,13 @@ async function extractDetails(url) {
                 }
             }
         }
-        return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]);
+        return JSON.stringify([{ description: 'Info unavailable', author: 'Twitch', date: '' }]);
     } catch (error) {
-        return JSON.stringify([{ description: 'Erreur chargement', author: 'Twitch', date: '' }]);
+        return JSON.stringify([{ description: 'Loading error', author: 'Twitch', date: '' }]);
     }
 }
 
-// --- 3. ÉPISODES ---
+// --- 3. EPISODES ---
 async function extractEpisodes(url) {
     try {
         if (url.startsWith("ERROR_")) return JSON.stringify([]);
@@ -180,7 +178,7 @@ async function extractEpisodes(url) {
         return JSON.stringify([{
             href: url,
             number: 1,
-            title: "Lancer la Vidéo",
+            title: "Play Video",
             season: 1
         }]);
     } catch (error) { return JSON.stringify([]); }
@@ -210,7 +208,7 @@ async function extractStreamUrl(url) {
                     const urlParts = seekPreviewsURL.split('/storyboards/');
                     if (urlParts.length > 0) {
                         streams.push({
-                            title: "VOD (NoSub - Sans Pub)",
+                            title: "VOD (NoSub - No Ads)",
                             streamUrl: `${urlParts[0]}/chunked/index-dvr.m3u8`,
                             headers: { "Referer": "https://www.twitch.tv/" }
                         });
@@ -218,7 +216,7 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
 
-            // 2. Officiel
+            // 2. Official
             try {
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
@@ -232,7 +230,7 @@ async function extractStreamUrl(url) {
                     const safeToken = encodeURIComponent(tokenData.value);
                     const safeSig = encodeURIComponent(tokenData.signature);
                     streams.push({
-                        title: "VOD (Officiel)",
+                        title: "VOD (Official)",
                         streamUrl: `https://usher.ttvnw.net/vod/${videoId}.m3u8?nauth=${safeToken}&nauthsig=${safeSig}&allow_source=true&player_backend=mediaplayer`,
                         headers: { "Referer": "https://www.twitch.tv/" }
                     });
@@ -245,7 +243,7 @@ async function extractStreamUrl(url) {
     } catch (error) { return JSON.stringify({ streams: [], subtitles: [] }); }
 }
 
-// --- UTILITAIRE SORA ---
+// --- UTILS SORA ---
 async function soraFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
     try {
         if (typeof fetchv2 !== 'undefined') {
