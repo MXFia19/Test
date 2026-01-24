@@ -21,102 +21,41 @@ function formatDate(isoString) {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-// --- 1. RECHERCHE (Correction du bug "previewImage") ---
+// --- 1. RECHERCHE (Uniquement les VODs) ---
 async function searchResults(keyword) {
-    console.log(`[TwitchDebug] Recherche lancée pour : ${keyword}`);
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // REQUÊTE PRINCIPALE CORRIGÉE
-        // On remplace 'previewImage { url }' par 'previewImageURL(width: 1280, height: 720)'
-        let queryTemplate = `query {
-            user(login: "KEYWORD_PLACEHOLDER") {
-                login
-                displayName
-                stream {
-                    id
-                    title
-                    game { name }
-                    previewImageURL(width: 1280, height: 720) 
-                }
-                videos(first: 20, type: ARCHIVE, sort: TIME) {
-                    edges {
-                        node {
-                            id
-                            title
-                            publishedAt
-                            previewThumbnailURL(height: 360, width: 640)
-                        }
-                    }
-                }
-            }
-        }`;
-
-        let query = { query: queryTemplate.replace("KEYWORD_PLACEHOLDER", cleanKeyword) };
-
-        let responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
-        let json = await responseText.json();
-        
-        if (json.errors) {
-            console.log(`[TwitchDebug] GQL Errors (Direct): ${JSON.stringify(json.errors)}`);
-        }
-
-        let user = json.data?.user;
-
-        // REQUÊTE SECOURS : Si l'utilisateur n'est pas trouvé directement, on cherche la chaîne
-        if (!user) {
-            console.log(`[TwitchDebug] User direct non trouvé, tentative de recherche floue...`);
-            const searchQuery = {
-                query: `query {
-                    searchFor(text: "${cleanKeyword}") {
-                        channels {
-                            edges {
-                                node { login }
+        // On ne demande plus le "stream" (live), seulement les vidéos
+        const query = {
+            query: `query {
+                user(login: "${cleanKeyword}") {
+                    login
+                    displayName
+                    videos(first: 20) {
+                        edges {
+                            node {
+                                id
+                                title
+                                publishedAt
+                                previewThumbnailURL(height: 360, width: 640)
                             }
                         }
                     }
-                }`
-            };
-            const searchResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(searchQuery) });
-            const searchJson = await searchResp.json();
-            const foundChannel = searchJson.data?.searchFor?.channels?.edges?.[0]?.node;
+                }
+            }`
+        };
 
-            if (foundChannel && foundChannel.login) {
-                console.log(`[TwitchDebug] Chaîne trouvée via recherche : ${foundChannel.login}`);
-                // On relance la requête principale avec le bon login
-                query.query = queryTemplate.replace("KEYWORD_PLACEHOLDER", foundChannel.login);
-                responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
-                json = await responseText.json();
-                user = json.data?.user;
-            }
-        }
+        const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
+        const json = await responseText.json();
+        const user = json.data?.user;
 
-        if (!user) {
-             console.log(`[TwitchDebug] Echec total : Utilisateur introuvable.`);
-             return JSON.stringify([]);
-        }
+        if (!user) return JSON.stringify([]);
 
         const results = [];
 
-        // A. LIVE (Affiché comme un film en tête)
-        if (user.stream) {
-            const stream = user.stream;
-            // previewImageURL renvoie directement une string maintenant
-            let img = stream.previewImageURL || "https://pngimg.com/uploads/twitch/twitch_PNG13.png";
-
-            const safeTitle = safeText(stream.title) || "Direct";
-            
-            results.push({
-                title: `🔴 LIVE: ${safeTitle}`,
-                image: img,
-                href: `https://twitch.tv/live/${user.login}`
-            });
-        }
-
-        // B. VODS
+        // On traite uniquement la liste des vidéos
         const edges = user.videos?.edges || [];
-        console.log(`[TwitchDebug] VODs trouvées : ${edges.length}`);
-        
         edges.forEach(edge => {
             const video = edge.node;
             const dateStr = formatDate(video.publishedAt);
@@ -134,26 +73,21 @@ async function searchResults(keyword) {
             results.push({
                 title: title,
                 image: img,
-                href: `https://twitch.tv/videos/${video.id}`
+                href: `https://www.twitch.tv/videos/${video.id}`
             });
         });
 
         return JSON.stringify(results);
 
     } catch (error) {
-        console.log(`[TwitchDebug] CRITICAL ERROR: ${error}`);
         return JSON.stringify([]);
     }
 }
 
-// --- 2. DÉTAILS ---
+// --- 2. DÉTAILS (Uniquement pour les VODs) ---
 async function extractDetails(url) {
     try {
-        let desc = "";
-        let dateInfo = "";
-        let durationInfo = "";
-        let author = "Twitch";
-
+        // On ne traite que les URLs contenant "/videos/"
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             const videoId = match ? match[1] : "";
@@ -176,94 +110,57 @@ async function extractDetails(url) {
                 const video = json.data?.video;
 
                 if (video) {
-                    author = video.owner?.displayName || "Streamer";
+                    const author = video.owner?.displayName || "Streamer";
                     const d = formatDate(video.publishedAt);
                     const mins = Math.floor((video.lengthSeconds || 0) / 60);
+                    const rawDesc = safeText(video.description);
                     
-                    dateInfo = d;
-                    durationInfo = `${mins} min`;
-                    let rawDesc = safeText(video.description);
-                    
-                    desc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} vues\n\n${rawDesc}`;
+                    // Description formatée
+                    const fullDesc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} vues\n\n${rawDesc}`;
+
+                    return JSON.stringify([{
+                        description: fullDesc,
+                        author: author,
+                        date: d,
+                        aliases: `${mins} min`
+                    }]);
                 }
             }
-        } else {
-            desc = "Diffusion en direct. Cliquez pour rejoindre le stream.";
-            dateInfo = "En Direct";
-            durationInfo = "LIVE";
         }
 
-        return JSON.stringify([{
-            description: desc || "Pas de description",
-            author: author,
-            date: dateInfo,
-            aliases: durationInfo // Ajouté pour afficher la durée
-        }]);
+        return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]);
 
     } catch (error) {
-        return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]);
+        return JSON.stringify([{ description: 'Erreur chargement', author: 'Twitch', date: '' }]);
     }
 }
 
 // --- 3. ÉPISODES ---
 async function extractEpisodes(url) {
     try {
-        const isVod = url.includes("/videos/");
-        const title = isVod ? "Lancer la Vidéo" : "Regarder le Direct";
-
         return JSON.stringify([{
             href: url,
             number: 1,
-            title: title,
+            title: "Lancer la Vidéo",
             season: 1
         }]);
     } catch (error) { return JSON.stringify([]); }
 }
 
-// --- 4. STREAM ---
+// --- 4. STREAM (Uniquement VOD NoSub/Officiel) ---
 async function extractStreamUrl(url) {
     try {
         let streams = [];
+        
+        // Extraction ID VOD uniquement
         let videoId = "";
-        let login = "";
-        let isLive = false;
-
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             if (match) videoId = match[1];
-        } else if (url.includes("/live/")) {
-            const parts = url.split('/');
-            login = parts[parts.length - 1];
-            isLive = true;
         }
 
-        // CAS A : LIVE
-        if (isLive && login) {
-            try {
-                const tokenQuery = {
-                    operationName: "PlaybackAccessToken_Template",
-                    query: "query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) { streamPlaybackAccessToken(channelName: $login, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: $playerType}) @include(if: $isLive) { value signature __typename } }",
-                    variables: { isLive: true, login: login, isVod: false, vodID: "", playerType: "site" }
-                };
-                const tokenResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(tokenQuery) });
-                const tokenJson = await tokenResp.json();
-                const tokenData = tokenJson.data?.streamPlaybackAccessToken;
-                
-                if (tokenData) {
-                    const safeToken = encodeURIComponent(tokenData.value);
-                    const safeSig = encodeURIComponent(tokenData.signature);
-                    streams.push({
-                        title: "Live (Source)",
-                        streamUrl: `https://usher.ttvnw.net/api/channel/hls/${login}.m3u8?token=${safeToken}&sig=${safeSig}&allow_source=true&player_backend=mediaplayer`,
-                        headers: { "Referer": "https://www.twitch.tv/" }
-                    });
-                }
-            } catch(e) {}
-        } 
-        
-        // CAS B : VOD
-        else if (videoId) {
-            // 1. NoSub (Priorité)
+        if (videoId) {
+            // 1. NoSub (Priorité : Hack Storyboard)
             try {
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
@@ -281,7 +178,7 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
 
-            // 2. Officiel (Backup)
+            // 2. Officiel (Backup : Token classique)
             try {
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
