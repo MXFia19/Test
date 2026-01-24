@@ -9,17 +9,10 @@ const HEADERS = {
     'Content-Type': 'application/json'
 };
 
-// --- OUTILS (Comme Purstream) ---
-function slugify(title) {
-    if (!title) return "video";
-    return title
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9\s-]/g, "")
-      .trim()
-      .replace(/\s+/g, "-")
-      .replace(/-+/g, "-");
+// --- OUTILS ---
+function safeText(str) {
+    if (!str) return "";
+    return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
 }
 
 function formatDate(isoString) {
@@ -28,15 +21,17 @@ function formatDate(isoString) {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-// --- 1. RECHERCHE ---
+// --- 1. RECHERCHE (Affiche les VODs comme des films) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
+        // On récupère le Stream (Live) et les Vidéos (VODs)
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
                     login
+                    displayName
                     stream { id title game { name } previewImage { url } }
                     videos(first: 20) {
                         edges {
@@ -58,34 +53,33 @@ async function searchResults(keyword) {
 
         if (!user) return JSON.stringify([]);
 
-        const transformedResults = [];
+        const results = [];
 
-        // A. LIVE (Comme un film)
+        // A. LIVE (Comme un film en tête de liste)
         if (user.stream) {
             const stream = user.stream;
             let img = stream.previewImage?.url 
                 ? stream.previewImage.url.replace("{width}", "1280").replace("{height}", "720")
                 : "https://pngimg.com/uploads/twitch/twitch_PNG13.png";
+
+            const safeTitle = safeText(stream.title) || "Direct";
             
-            const title = "LIVE: " + (stream.title || "Direct");
-            
-            // On génère une fausse URL type "movie"
-            transformedResults.push({
-                title: title,
+            results.push({
+                title: `🔴 LIVE: ${safeTitle}`,
                 image: img,
-                href: `https://twitch.tv/movie/LIVE_${user.login}-${slugify(title)}`
+                // On utilise l'URL officielle comme ID unique
+                href: `https://www.twitch.tv/${user.login}`
             });
         }
 
-        // B. VODS (Comme des films)
+        // B. VODS (Comme une liste de films)
         const edges = user.videos?.edges || [];
         edges.forEach(edge => {
             const video = edge.node;
             const dateStr = formatDate(video.publishedAt);
             
-            let title = video.title || `VOD du ${dateStr}`;
-            // Nettoyage basique pour l'affichage
-            title = title.replace(/"/g, "'").trim();
+            let title = safeText(video.title);
+            if (!title) title = `VOD du ${dateStr}`;
 
             let img = video.previewThumbnailURL;
             if (img && !img.includes("404_preview")) {
@@ -94,148 +88,146 @@ async function searchResults(keyword) {
                 img = "https://vod-secure.twitch.tv/_404/404_preview-640x360.jpg";
             }
 
-            transformedResults.push({
+            results.push({
                 title: title,
                 image: img,
-                href: `https://twitch.tv/movie/${video.id}-${slugify(title)}`
+                // On utilise l'URL officielle de la vidéo comme ID unique
+                href: `https://www.twitch.tv/videos/${video.id}`
             });
         });
 
-        return JSON.stringify(transformedResults);
+        return JSON.stringify(results);
 
     } catch (error) {
-        console.log('Search error: ' + error);
+        console.log('Search Error: ' + error);
         return JSON.stringify([]);
     }
 }
 
-// --- 2. DÉTAILS ---
+// --- 2. DÉTAILS (Récupère les infos via l'URL) ---
 async function extractDetails(url) {
     try {
-        // Extraction de l'ID via Regex (compatible format Purstream)
-        // Match "movie/ID-slug" ou "movie/LIVE_pseudo-slug"
-        const match = url.match(/\/movie\/([a-zA-Z0-9_]+)/);
-        if (!match) throw new Error("Invalid URL format");
-
-        const fullId = match[1]; // Ex: "123456" ou "LIVE_nikof"
-        
         let desc = "";
         let dateInfo = "";
         let durationInfo = "";
+        let author = "Twitch";
 
-        if (fullId.startsWith("LIVE_")) {
-            desc = "Diffusion en direct sur Twitch.";
-            dateInfo = "Aujourd'hui";
-            durationInfo = "En direct";
+        // Détection Live ou VOD via l'URL
+        if (url.includes("/videos/")) {
+            // C'est une VOD
+            const match = url.match(/\/videos\/(\d+)/);
+            const videoId = match ? match[1] : "";
+
+            if (videoId) {
+                const query = {
+                    query: `query {
+                        video(id: "${videoId}") {
+                            title
+                            description
+                            publishedAt
+                            viewCount
+                            lengthSeconds
+                            owner { displayName }
+                        }
+                    }`
+                };
+                const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
+                const json = await responseText.json();
+                const video = json.data?.video;
+
+                if (video) {
+                    author = video.owner?.displayName || "Streamer";
+                    const d = formatDate(video.publishedAt);
+                    const mins = Math.floor((video.lengthSeconds || 0) / 60);
+                    
+                    dateInfo = d;
+                    durationInfo = `${mins} min`;
+                    let rawDesc = safeText(video.description);
+                    
+                    desc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} vues\n\n${rawDesc}`;
+                }
+            }
         } else {
-            // C'est une VOD, on fetch les infos
-            const query = {
-                query: `query {
-                    video(id: "${fullId}") {
-                        description
-                        publishedAt
-                        lengthSeconds
-                        viewCount
-                    }
-                }`
-            };
-            const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
-            const json = await responseText.json();
-            const video = json.data?.video;
-
-            const d = formatDate(video?.publishedAt);
-            const mins = Math.floor((video?.lengthSeconds || 0) / 60);
-            
-            dateInfo = `Diffusé le: ${d}`;
-            durationInfo = `${mins} min`;
-            desc = (video?.description || "Aucune description").replace(/"/g, "'");
-            
-            // Ajout des vues et date dans la description visible
-            desc = `📅 ${d} | 👁 ${video?.viewCount || 0} vues\n\n${desc}`;
+            // C'est un Live (URL type twitch.tv/pseudo)
+            desc = "Diffusion en direct. Cliquez pour rejoindre le stream.";
+            dateInfo = "En Direct";
+            durationInfo = "LIVE";
         }
 
-        const details = [{
-            description: desc,
-            aliases: durationInfo,
-            airdate: dateInfo
-        }];
-
-        return JSON.stringify(details);
+        return JSON.stringify([{
+            description: desc || "Pas de description",
+            author: author,
+            date: dateInfo
+        }]);
 
     } catch (error) {
-        return JSON.stringify([{
-            description: 'Description indisponible',
-            aliases: 'N/A',
-            airdate: 'N/A'
-        }]);
+        return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]);
     }
 }
 
-// --- 3. ÉPISODES (Un seul épisode "Full Movie") ---
+// --- 3. ÉPISODES (Un seul épisode pour lancer le film) ---
 async function extractEpisodes(url) {
     try {
-        // L'url arrive au format complet, on la garde comme ID pour le stream
-        const match = url.match(/\/movie\/([a-zA-Z0-9_]+)/);
-        const fullId = match ? match[1] : "video";
-        
-        const isLive = fullId.startsWith("LIVE_");
+        // En mode Movie, on renvoie simplement l'URL reçue comme un épisode unique
+        const isVod = url.includes("/videos/");
+        const title = isVod ? "Lancer la Vidéo" : "Regarder le Direct";
 
-        return JSON.stringify([
-            { 
-                href: url, // On repasse l'URL complète
-                number: 1, 
-                title: isLive ? "Regarder le Direct" : "Lancer la Vidéo" 
-            }
-        ]);
-    } catch (error) {
-        return JSON.stringify([]);
-    }    
+        return JSON.stringify([{
+            href: url,
+            number: 1,
+            title: title,
+            season: 1
+        }]);
+    } catch (error) { return JSON.stringify([]); }
 }
 
-// --- 4. STREAM ---
+// --- 4. STREAM (Generation des liens) ---
 async function extractStreamUrl(url) {
     try {
         let streams = [];
-
-        // Récupération de l'ID depuis l'URL (comme dans extractDetails)
-        const match = url.match(/\/movie\/([a-zA-Z0-9_]+)/);
-        if (!match) return JSON.stringify({ streams: [], subtitles: "" });
-
-        const fullId = match[1];
         
-        const isLive = fullId.startsWith("LIVE_");
-        let login = "";
+        // Analyse de l'URL pour savoir quoi faire
         let videoId = "";
+        let login = "";
+        let isLive = false;
 
-        if (isLive) {
-            login = fullId.replace("LIVE_", "");
+        if (url.includes("/videos/")) {
+            const match = url.match(/\/videos\/(\d+)/);
+            if (match) videoId = match[1];
         } else {
-            videoId = fullId;
+            // Extraction pseudo du lien live : https://www.twitch.tv/pseudo
+            const parts = url.split('/');
+            login = parts[parts.length - 1];
+            isLive = true;
         }
 
-        // CAS A : LIVE
-        if (isLive) {
-            const tokenQuery = {
-                operationName: "PlaybackAccessToken_Template",
-                query: "query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) { streamPlaybackAccessToken(channelName: $login, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: $playerType}) @include(if: $isLive) { value signature __typename } }",
-                variables: { isLive: true, login: login, isVod: false, vodID: "", playerType: "site" }
-            };
-            const tokenResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(tokenQuery) });
-            const tokenJson = await tokenResp.json();
-            const tokenData = tokenJson.data?.streamPlaybackAccessToken;
-            if (tokenData) {
-                const safeToken = encodeURIComponent(tokenData.value);
-                const safeSig = encodeURIComponent(tokenData.signature);
-                streams.push({
-                    title: "Live (Source)",
-                    streamUrl: `https://usher.ttvnw.net/api/channel/hls/${login}.m3u8?token=${safeToken}&sig=${safeSig}&allow_source=true&player_backend=mediaplayer`,
-                    headers: { "Referer": "https://www.twitch.tv/" }
-                });
-            }
+        // CAS A : LIVE (Méthode Officielle)
+        if (isLive && login) {
+            try {
+                const tokenQuery = {
+                    operationName: "PlaybackAccessToken_Template",
+                    query: "query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) { streamPlaybackAccessToken(channelName: $login, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: $playerType}) @include(if: $isLive) { value signature __typename } }",
+                    variables: { isLive: true, login: login, isVod: false, vodID: "", playerType: "site" }
+                };
+                const tokenResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(tokenQuery) });
+                const tokenJson = await tokenResp.json();
+                const tokenData = tokenJson.data?.streamPlaybackAccessToken;
+                
+                if (tokenData) {
+                    const safeToken = encodeURIComponent(tokenData.value);
+                    const safeSig = encodeURIComponent(tokenData.signature);
+                    streams.push({
+                        title: "Live (Source)",
+                        streamUrl: `https://usher.ttvnw.net/api/channel/hls/${login}.m3u8?token=${safeToken}&sig=${safeSig}&allow_source=true&player_backend=mediaplayer`,
+                        headers: { "Referer": "https://www.twitch.tv/" }
+                    });
+                }
+            } catch(e) {}
         } 
-        // CAS B : VOD
-        else {
-            // 1. NoSub (Priorité)
+        
+        // CAS B : VOD (Méthode NoSub Prioritaire)
+        else if (videoId) {
+            // 1. NoSub (Hack Storyboard)
             try {
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
@@ -253,7 +245,7 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
 
-            // 2. Officiel (Secours)
+            // 2. Officiel (Si NoSub échoue)
             try {
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
@@ -275,37 +267,20 @@ async function extractStreamUrl(url) {
             } catch (e) {}
         }
 
-        const results = {
-            streams: streams,
-            subtitles: []
-        };
-        return JSON.stringify(results);
+        return JSON.stringify({ streams: streams, subtitles: [] });
 
-    } catch (error) {
-        return JSON.stringify({ streams: [], subtitles: [] });
-    }
+    } catch (error) { return JSON.stringify({ streams: [], subtitles: [] }); }
 }
 
 // --- UTILITAIRE SORA ---
 async function soraFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
     try {
         if (typeof fetchv2 !== 'undefined') {
-            return await fetchv2(
-                url,
-                options.headers ?? {},
-                options.method ?? 'GET',
-                options.body ?? null,
-                true,
-                options.encoding ?? 'utf-8'
-            );
+            return await fetchv2(url, options.headers ?? {}, options.method ?? 'GET', options.body ?? null, true, options.encoding ?? 'utf-8');
         } else {
             return await fetch(url, options);
         }
     } catch(e) {
-        try {
-            return await fetch(url, options);
-        } catch(error) {
-            return null;
-        }
+        try { return await fetch(url, options); } catch(error) { return null; }
     }
 }
