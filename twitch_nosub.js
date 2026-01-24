@@ -15,18 +15,22 @@ function safeText(str) {
     return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
 }
 
-function formatDate(isoString) {
-    if (!isoString) return "Inconnu";
+// Format ISO pour forcer l'ordre (AAAA-MM-JJ)
+function formatDateISO(isoString) {
+    if (!isoString) return "0000-00-00";
     const d = new Date(isoString);
-    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+    const year = d.getFullYear();
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const day = d.getDate().toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE (Avec Tri par Date Forcé) ---
+// --- 1. RECHERCHE (Trié par date décroissante) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On demande explicitement le tri par TEMPS (sort: TIME) et type ARCHIVE
+        // On demande à Twitch de trier par TEMPS (TIME)
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -52,22 +56,26 @@ async function searchResults(keyword) {
 
         if (!user) return JSON.stringify([]);
 
-        // Récupération des données brutes
+        // Récupération des vidéos
         let edges = user.videos?.edges || [];
 
-        // TRI JAVASCRIPT DE SÉCURITÉ
-        // On classe du plus récent (Date b) au plus vieux (Date a)
+        // --- TRI MANUEL ROBUSTE (Du plus Récent au plus Vieux) ---
         edges.sort((a, b) => {
-            return new Date(b.node.publishedAt) - new Date(a.node.publishedAt);
+            const dateA = new Date(a.node.publishedAt).getTime();
+            const dateB = new Date(b.node.publishedAt).getTime();
+            return dateB - dateA; // Inverser ici (dateA - dateB) si tu veux du plus vieux au plus récent
         });
 
         const results = [];
         edges.forEach(edge => {
             const video = edge.node;
-            const dateStr = formatDate(video.publishedAt);
+            const dateStr = formatDateISO(video.publishedAt); // Ex: 2025-01-24
             
-            let title = safeText(video.title);
-            if (!title) title = `VOD du ${dateStr}`;
+            let rawTitle = safeText(video.title);
+            if (!rawTitle) rawTitle = "VOD Sans Titre";
+
+            // On met la date AU DÉBUT du titre pour forcer l'ordre visuel et alphabétique
+            const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
             if (img && !img.includes("404_preview")) {
@@ -77,7 +85,7 @@ async function searchResults(keyword) {
             }
 
             results.push({
-                title: title,
+                title: displayTitle,
                 image: img,
                 href: `https://www.twitch.tv/videos/${video.id}`
             });
@@ -86,6 +94,7 @@ async function searchResults(keyword) {
         return JSON.stringify(results);
 
     } catch (error) {
+        console.log("Search Error: " + error);
         return JSON.stringify([]);
     }
 }
@@ -116,7 +125,7 @@ async function extractDetails(url) {
 
                 if (video) {
                     const author = video.owner?.displayName || "Streamer";
-                    const d = formatDate(video.publishedAt);
+                    const d = formatDateISO(video.publishedAt);
                     const mins = Math.floor((video.lengthSeconds || 0) / 60);
                     const rawDesc = safeText(video.description);
                     
