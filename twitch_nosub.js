@@ -21,45 +21,49 @@ function formatDate(isoString) {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-// --- 1. RECHERCHE (Correction Arguments + Fallback) ---
+// --- 1. RECHERCHE (Correction du bug "previewImage") ---
 async function searchResults(keyword) {
     console.log(`[TwitchDebug] Recherche lancée pour : ${keyword}`);
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // REQUÊTE 1 : Tentative directe avec les BONS arguments
-        // Ajout de 'type: ARCHIVE, sort: TIME' indispensable pour éviter le null
-        let query = {
-            query: `query {
-                user(login: "${cleanKeyword}") {
-                    login
-                    displayName
-                    stream { id title game { name } previewImage { url } }
-                    videos(first: 20, type: ARCHIVE, sort: TIME) {
-                        edges {
-                            node {
-                                id
-                                title
-                                publishedAt
-                                previewThumbnailURL(height: 360, width: 640)
-                            }
+        // REQUÊTE PRINCIPALE CORRIGÉE
+        // On remplace 'previewImage { url }' par 'previewImageURL(width: 1280, height: 720)'
+        let queryTemplate = `query {
+            user(login: "KEYWORD_PLACEHOLDER") {
+                login
+                displayName
+                stream {
+                    id
+                    title
+                    game { name }
+                    previewImageURL(width: 1280, height: 720) 
+                }
+                videos(first: 20, type: ARCHIVE, sort: TIME) {
+                    edges {
+                        node {
+                            id
+                            title
+                            publishedAt
+                            previewThumbnailURL(height: 360, width: 640)
                         }
                     }
                 }
-            }`
-        };
+            }
+        }`;
+
+        let query = { query: queryTemplate.replace("KEYWORD_PLACEHOLDER", cleanKeyword) };
 
         let responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
         let json = await responseText.json();
         
-        // LOG DES ERREURS POUR DEBUG
         if (json.errors) {
-            console.log(`[TwitchDebug] GQL Errors: ${JSON.stringify(json.errors)}`);
+            console.log(`[TwitchDebug] GQL Errors (Direct): ${JSON.stringify(json.errors)}`);
         }
 
         let user = json.data?.user;
 
-        // REQUÊTE 2 (ROUE DE SECOURS) : Si utilisateur non trouvé, on cherche la chaîne
+        // REQUÊTE SECOURS : Si l'utilisateur n'est pas trouvé directement, on cherche la chaîne
         if (!user) {
             console.log(`[TwitchDebug] User direct non trouvé, tentative de recherche floue...`);
             const searchQuery = {
@@ -79,8 +83,8 @@ async function searchResults(keyword) {
 
             if (foundChannel && foundChannel.login) {
                 console.log(`[TwitchDebug] Chaîne trouvée via recherche : ${foundChannel.login}`);
-                // On relance la requête 1 avec le bon login trouvé
-                query.query = query.query.replace(cleanKeyword, foundChannel.login);
+                // On relance la requête principale avec le bon login
+                query.query = queryTemplate.replace("KEYWORD_PLACEHOLDER", foundChannel.login);
                 responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
                 json = await responseText.json();
                 user = json.data?.user;
@@ -94,12 +98,11 @@ async function searchResults(keyword) {
 
         const results = [];
 
-        // A. LIVE
+        // A. LIVE (Affiché comme un film en tête)
         if (user.stream) {
             const stream = user.stream;
-            let img = stream.previewImage?.url 
-                ? stream.previewImage.url.replace("{width}", "1280").replace("{height}", "720")
-                : "https://pngimg.com/uploads/twitch/twitch_PNG13.png";
+            // previewImageURL renvoie directement une string maintenant
+            let img = stream.previewImageURL || "https://pngimg.com/uploads/twitch/twitch_PNG13.png";
 
             const safeTitle = safeText(stream.title) || "Direct";
             
@@ -145,7 +148,6 @@ async function searchResults(keyword) {
 
 // --- 2. DÉTAILS ---
 async function extractDetails(url) {
-    console.log(`[TwitchDebug] Details pour : ${url}`);
     try {
         let desc = "";
         let dateInfo = "";
@@ -194,7 +196,8 @@ async function extractDetails(url) {
         return JSON.stringify([{
             description: desc || "Pas de description",
             author: author,
-            date: dateInfo
+            date: dateInfo,
+            aliases: durationInfo // Ajouté pour afficher la durée
         }]);
 
     } catch (error) {
@@ -219,10 +222,8 @@ async function extractEpisodes(url) {
 
 // --- 4. STREAM ---
 async function extractStreamUrl(url) {
-    console.log(`[TwitchDebug] Stream pour : ${url}`);
     try {
         let streams = [];
-        
         let videoId = "";
         let login = "";
         let isLive = false;
