@@ -12,7 +12,6 @@ const HEADERS = {
 // --- OUTILS ---
 function safeText(str) {
     if (!str) return "";
-    // Nettoyage strict pour éviter les erreurs JSON (comme dans 1movies)
     return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
 }
 
@@ -22,12 +21,12 @@ function formatDate(isoString) {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-// --- 1. RECHERCHE (Affiche les VODs comme des Films) ---
+// --- 1. RECHERCHE ---
 async function searchResults(keyword) {
+    console.log(`[TwitchDebug] Recherche lancée pour : ${keyword}`);
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On récupère le Stream (Live) et les Vidéos (VODs)
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -48,16 +47,29 @@ async function searchResults(keyword) {
             }`
         };
 
+        console.log(`[TwitchDebug] Envoi requête GQL pour : ${cleanKeyword}`);
         const responseText = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(query) });
+        
+        if (!responseText) {
+            console.log(`[TwitchDebug] Erreur: responseText est null`);
+            return JSON.stringify([]);
+        }
+
         const json = await responseText.json();
         const user = json.data?.user;
 
-        if (!user) return JSON.stringify([]);
+        if (!user) {
+            console.log(`[TwitchDebug] Aucun utilisateur trouvé pour le login exact : ${cleanKeyword}`);
+            return JSON.stringify([]);
+        }
+
+        console.log(`[TwitchDebug] Utilisateur trouvé : ${user.displayName}`);
 
         const results = [];
 
-        // A. LIVE (Comme un film en tête de liste)
+        // A. LIVE
         if (user.stream) {
+            console.log(`[TwitchDebug] Stream en cours détecté`);
             const stream = user.stream;
             let img = stream.previewImage?.url 
                 ? stream.previewImage.url.replace("{width}", "1280").replace("{height}", "720")
@@ -68,13 +80,14 @@ async function searchResults(keyword) {
             results.push({
                 title: `🔴 LIVE: ${safeTitle}`,
                 image: img,
-                // On utilise une URL unique pour identifier le Live
                 href: `https://twitch.tv/live/${user.login}`
             });
         }
 
-        // B. VODS (Liste des 20 dernières vidéos)
+        // B. VODS
         const edges = user.videos?.edges || [];
+        console.log(`[TwitchDebug] Nombre de VODs trouvées : ${edges.length}`);
+
         edges.forEach(edge => {
             const video = edge.node;
             const dateStr = formatDate(video.publishedAt);
@@ -92,31 +105,32 @@ async function searchResults(keyword) {
             results.push({
                 title: title,
                 image: img,
-                // On utilise l'URL officielle de la vidéo comme ID unique
                 href: `https://twitch.tv/videos/${video.id}`
             });
         });
 
+        console.log(`[TwitchDebug] Renvoi de ${results.length} résultats à l'application`);
         return JSON.stringify(results);
 
     } catch (error) {
+        console.log(`[TwitchDebug] CRITICAL SEARCH ERROR: ${error}`);
         return JSON.stringify([]);
     }
 }
 
-// --- 2. DÉTAILS (Récupère les infos via l'URL) ---
+// --- 2. DÉTAILS ---
 async function extractDetails(url) {
+    console.log(`[TwitchDebug] Demande détails pour URL : ${url}`);
     try {
         let desc = "";
         let dateInfo = "";
         let durationInfo = "";
         let author = "Twitch";
 
-        // Détection Live ou VOD via l'URL
         if (url.includes("/videos/")) {
-            // C'est une VOD
             const match = url.match(/\/videos\/(\d+)/);
             const videoId = match ? match[1] : "";
+            console.log(`[TwitchDebug] Extraction ID VOD : ${videoId}`);
 
             if (videoId) {
                 const query = {
@@ -145,10 +159,12 @@ async function extractDetails(url) {
                     let rawDesc = safeText(video.description);
                     
                     desc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} vues\n\n${rawDesc}`;
+                } else {
+                    console.log(`[TwitchDebug] Pas d'info vidéo retournée par GQL`);
                 }
             }
         } else {
-            // C'est un Live
+            console.log(`[TwitchDebug] C'est un lien LIVE`);
             desc = "Diffusion en direct. Cliquez pour rejoindre le stream.";
             dateInfo = "En Direct";
             durationInfo = "LIVE";
@@ -161,14 +177,15 @@ async function extractDetails(url) {
         }]);
 
     } catch (error) {
+        console.log(`[TwitchDebug] DETAIL ERROR: ${error}`);
         return JSON.stringify([{ description: 'Info indisponible', author: 'Twitch', date: '' }]);
     }
 }
 
-// --- 3. ÉPISODES (Un seul épisode pour lancer le film) ---
+// --- 3. ÉPISODES ---
 async function extractEpisodes(url) {
+    console.log(`[TwitchDebug] Génération bouton lecture pour : ${url}`);
     try {
-        // En mode Movie, on renvoie simplement l'URL reçue comme un épisode unique
         const isVod = url.includes("/videos/");
         const title = isVod ? "Lancer la Vidéo" : "Regarder le Direct";
 
@@ -181,11 +198,11 @@ async function extractEpisodes(url) {
     } catch (error) { return JSON.stringify([]); }
 }
 
-// --- 4. STREAM (Generation des liens) ---
+// --- 4. STREAM ---
 async function extractStreamUrl(url) {
+    console.log(`[TwitchDebug] Extraction Stream pour : ${url}`);
     try {
         let streams = [];
-        
         let videoId = "";
         let login = "";
         let isLive = false;
@@ -193,14 +210,15 @@ async function extractStreamUrl(url) {
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             if (match) videoId = match[1];
+            console.log(`[TwitchDebug] Mode VOD détecté, ID: ${videoId}`);
         } else if (url.includes("/live/")) {
-            // Extraction pseudo du lien live : https://twitch.tv/live/pseudo
             const parts = url.split('/');
             login = parts[parts.length - 1];
             isLive = true;
+            console.log(`[TwitchDebug] Mode LIVE détecté, Login: ${login}`);
         }
 
-        // CAS A : LIVE (Méthode Officielle)
+        // CAS A : LIVE
         if (isLive && login) {
             try {
                 const tokenQuery = {
@@ -221,13 +239,14 @@ async function extractStreamUrl(url) {
                         headers: { "Referer": "https://www.twitch.tv/" }
                     });
                 }
-            } catch(e) {}
+            } catch(e) { console.log(`[TwitchDebug] Erreur Live Token: ${e}`); }
         } 
         
-        // CAS B : VOD (Méthode NoSub Prioritaire)
+        // CAS B : VOD
         else if (videoId) {
-            // 1. NoSub (Hack Storyboard - Fonctionne souvent sans pub/sub)
+            // 1. NoSub
             try {
+                console.log(`[TwitchDebug] Tentative NoSub...`);
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
                 const sbJson = await sbResp.json();
@@ -240,12 +259,14 @@ async function extractStreamUrl(url) {
                             streamUrl: `${urlParts[0]}/chunked/index-dvr.m3u8`,
                             headers: { "Referer": "https://www.twitch.tv/" }
                         });
+                        console.log(`[TwitchDebug] Lien NoSub trouvé !`);
                     }
                 }
-            } catch (e) {}
+            } catch (e) { console.log(`[TwitchDebug] Erreur NoSub: ${e}`); }
 
-            // 2. Officiel (Si NoSub échoue)
+            // 2. Officiel
             try {
+                console.log(`[TwitchDebug] Tentative Officielle...`);
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
                     query: "query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) { videoPlaybackAccessToken(id: $vodID, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: $playerType}) @include(if: $isVod) { value signature __typename } }",
@@ -263,12 +284,16 @@ async function extractStreamUrl(url) {
                         headers: { "Referer": "https://www.twitch.tv/" }
                     });
                 }
-            } catch (e) {}
+            } catch (e) { console.log(`[TwitchDebug] Erreur Officiel: ${e}`); }
         }
 
+        console.log(`[TwitchDebug] Total streams trouvés: ${streams.length}`);
         return JSON.stringify({ streams: streams, subtitles: [] });
 
-    } catch (error) { return JSON.stringify({ streams: [], subtitles: [] }); }
+    } catch (error) { 
+        console.log(`[TwitchDebug] STREAM ERROR: ${error}`);
+        return JSON.stringify({ streams: [], subtitles: [] }); 
+    }
 }
 
 // --- UTILITAIRE SORA ---
