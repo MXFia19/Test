@@ -12,6 +12,7 @@ const HEADERS = {
 // --- OUTILS ---
 function safeText(str) {
     if (!str) return "";
+    // Nettoyage strict pour éviter les erreurs JSON (comme dans 1movies)
     return str.replace(/"/g, "'").replace(/[\r\n]+/g, " ").trim();
 }
 
@@ -21,7 +22,7 @@ function formatDate(isoString) {
     return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-// --- 1. RECHERCHE (Affiche les VODs comme des films) ---
+// --- 1. RECHERCHE (Affiche les VODs comme des Films) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
@@ -67,12 +68,12 @@ async function searchResults(keyword) {
             results.push({
                 title: `🔴 LIVE: ${safeTitle}`,
                 image: img,
-                // On utilise l'URL officielle comme ID unique
-                href: `https://www.twitch.tv/${user.login}`
+                // On utilise une URL unique pour identifier le Live
+                href: `https://twitch.tv/live/${user.login}`
             });
         }
 
-        // B. VODS (Comme une liste de films)
+        // B. VODS (Liste des 20 dernières vidéos)
         const edges = user.videos?.edges || [];
         edges.forEach(edge => {
             const video = edge.node;
@@ -92,14 +93,13 @@ async function searchResults(keyword) {
                 title: title,
                 image: img,
                 // On utilise l'URL officielle de la vidéo comme ID unique
-                href: `https://www.twitch.tv/videos/${video.id}`
+                href: `https://twitch.tv/videos/${video.id}`
             });
         });
 
         return JSON.stringify(results);
 
     } catch (error) {
-        console.log('Search Error: ' + error);
         return JSON.stringify([]);
     }
 }
@@ -148,7 +148,7 @@ async function extractDetails(url) {
                 }
             }
         } else {
-            // C'est un Live (URL type twitch.tv/pseudo)
+            // C'est un Live
             desc = "Diffusion en direct. Cliquez pour rejoindre le stream.";
             dateInfo = "En Direct";
             durationInfo = "LIVE";
@@ -186,7 +186,6 @@ async function extractStreamUrl(url) {
     try {
         let streams = [];
         
-        // Analyse de l'URL pour savoir quoi faire
         let videoId = "";
         let login = "";
         let isLive = false;
@@ -194,8 +193,8 @@ async function extractStreamUrl(url) {
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
             if (match) videoId = match[1];
-        } else {
-            // Extraction pseudo du lien live : https://www.twitch.tv/pseudo
+        } else if (url.includes("/live/")) {
+            // Extraction pseudo du lien live : https://twitch.tv/live/pseudo
             const parts = url.split('/');
             login = parts[parts.length - 1];
             isLive = true;
@@ -227,7 +226,7 @@ async function extractStreamUrl(url) {
         
         // CAS B : VOD (Méthode NoSub Prioritaire)
         else if (videoId) {
-            // 1. NoSub (Hack Storyboard)
+            // 1. NoSub (Hack Storyboard - Fonctionne souvent sans pub/sub)
             try {
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
@@ -275,12 +274,7 @@ async function extractStreamUrl(url) {
 // --- UTILITAIRE SORA ---
 async function soraFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
     try {
-        if (typeof fetchv2 !== 'undefined') {
-            return await fetchv2(url, options.headers ?? {}, options.method ?? 'GET', options.body ?? null, true, options.encoding ?? 'utf-8');
-        } else {
-            return await fetch(url, options);
-        }
-    } catch(e) {
-        try { return await fetch(url, options); } catch(error) { return null; }
-    }
+        if (typeof fetchv2 !== 'undefined') return await fetchv2(url, options.headers ?? {}, options.method ?? 'GET', options.body ?? null, true, options.encoding ?? 'utf-8');
+        else return await fetch(url, options);
+    } catch (e) { try { return await fetch(url, options); } catch (error) { return null; } }
 }
