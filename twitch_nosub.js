@@ -26,12 +26,12 @@ function formatDateISO(isoString) {
     return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE (Tri Strict sans Numéros) ---
+// --- 1. RECHERCHE (Naturelle - Sans tri forcé) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // On demande à Twitch de trier par date, mais on ne leur fait pas confiance à 100%
+        // On demande simplement à Twitch les archives triées par temps
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -57,15 +57,10 @@ async function searchResults(keyword) {
 
         if (!user) return JSON.stringify([]);
 
-        let edges = user.videos?.edges || [];
+        const edges = user.videos?.edges || [];
 
-        // --- TRI OBLIGATOIRE DANS LE CODE ---
-        // On trie du plus récent au plus ancien AVANT de créer le résultat final
-        edges.sort((a, b) => {
-            const dateA = new Date(a.node.publishedAt).getTime() || 0;
-            const dateB = new Date(b.node.publishedAt).getTime() || 0;
-            return dateB - dateA; // Descendant (Plus grand = plus récent en premier)
-        });
+        // PAS DE TRI JAVASCRIPT ICI
+        // On prend la liste telle qu'elle arrive de Twitch
 
         const results = edges.map(edge => {
             const video = edge.node;
@@ -74,7 +69,7 @@ async function searchResults(keyword) {
             let rawTitle = safeText(video.title);
             if (!rawTitle) rawTitle = "VOD Sans Titre";
 
-            // On garde juste la date entre crochets pour l'info, mais SANS numéro 01, 02...
+            // Affichage simple : [Date] Titre
             const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
