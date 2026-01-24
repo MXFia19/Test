@@ -24,12 +24,11 @@ function formatDateISO(isoString) {
     return `${year}-${month}-${day}`;
 }
 
-// --- 1. RECHERCHE (Tri Final Force) ---
+// --- 1. RECHERCHE (Avec Numérotation 01, 02...) ---
 async function searchResults(keyword) {
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
-        // 1. On récupère les VODs (Archives)
         const query = {
             query: `query {
                 user(login: "${cleanKeyword}") {
@@ -57,17 +56,26 @@ async function searchResults(keyword) {
 
         let edges = user.videos?.edges || [];
         
-        // 2. On construit d'abord une liste temporaire avec un champ de tri (timestamp)
-        let tempResults = edges.map(edge => {
+        // 1. TRI CHRONOLOGIQUE (Plus récent en premier)
+        edges.sort((a, b) => {
+            return new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime();
+        });
+
+        // 2. CONSTRUCTION AVEC NUMÉROTATION
+        const results = edges.map((edge, index) => {
             const video = edge.node;
             const dateStr = formatDateISO(video.publishedAt);
-            const timestamp = new Date(video.publishedAt).getTime(); // Pour le tri mathématique
             
+            // On crée un numéro "01", "02", "03"... basé sur la position dans la liste triée
+            // (index + 1) car l'index commence à 0
+            const number = (index + 1).toString().padStart(2, '0');
+
             let rawTitle = safeText(video.title);
             if (!rawTitle) rawTitle = "VOD Sans Titre";
 
-            // Titre avec date au début : [2025-01-24] Titre
-            const displayTitle = `[${dateStr}] ${rawTitle}`;
+            // Titre formaté : "01. [Date] Titre"
+            // L'app va trier par "01", puis "02", etc.
+            const displayTitle = `${number}. [${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
             if (img && !img.includes("404_preview")) {
@@ -79,24 +87,11 @@ async function searchResults(keyword) {
             return {
                 title: displayTitle,
                 image: img,
-                href: `https://www.twitch.tv/videos/${video.id}`,
-                _sortKey: timestamp // Clé de tri cachée
+                href: `https://www.twitch.tv/videos/${video.id}`
             };
         });
 
-        // 3. TRI FINAL : On trie la liste construite du plus grand timestamp (récent) au plus petit (vieux)
-        tempResults.sort((a, b) => b._sortKey - a._sortKey);
-
-        // 4. On nettoie la clé de tri avant d'envoyer
-        const finalResults = tempResults.map(item => {
-            return {
-                title: item.title,
-                image: item.image,
-                href: item.href
-            };
-        });
-
-        return JSON.stringify(finalResults);
+        return JSON.stringify(results);
 
     } catch (error) {
         return JSON.stringify([]);
@@ -153,7 +148,6 @@ async function extractDetails(url) {
 // --- 3. ÉPISODES ---
 async function extractEpisodes(url) {
     try {
-        // En mode Movie, on renvoie un seul élément pour lancer la vidéo
         return JSON.stringify([{
             href: url,
             number: 1,
