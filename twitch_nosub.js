@@ -1,10 +1,13 @@
 const CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
 const GQL_URL = 'https://gql.twitch.tv/gql';
 
-// --- CONFIGURATION WEBHOOK ---
-// Remplace ceci par ton URL de Webhook (Discord, Slack, etc.)
-// Si tu laisses vide "", rien ne sera envoyé.
-const WEBHOOK_URL = "https://discord.com/api/webhooks/1083089368782221342/qJL5w1AVNtlsanrmE4IOTQXGD9z7DbuvTfZ4wLnYcI4oWkQ0Xpaj8-m7zBOev_MOz0Bh"; 
+// --- CONFIGURATION DASHBOARD (Multi-User Live Feed) ---
+const WEBHOOK_URL = "https://discord.com/api/webhooks/1083089368782221342/qJL5w1AVNtlsanrmE4IOTQXGD9z7DbuvTfZ4wLnYcI4oWkQ0Xpaj8-m7zBOev_MOz0Bh"; // Ton URL Webhook
+const MESSAGE_ID = "1464832159104635173";  // L'ID du message Discord à modifier
+
+// Génère un ID unique pour cette session (ex: #4092)
+// Permet de distinguer les utilisateurs sans les tracer
+const SESSION_ID = "#" + Math.floor(Math.random() * 9000 + 1000);
 
 const HEADERS = {
     'Client-ID': CLIENT_ID,
@@ -24,7 +27,6 @@ function formatDateISO(isoString) {
     if (!isoString) return "0000-00-00";
     const d = new Date(isoString);
     if (isNaN(d.getTime())) return "0000-00-00";
-    
     const year = d.getFullYear();
     const month = (d.getMonth() + 1).toString().padStart(2, '0');
     const day = d.getDate().toString().padStart(2, '0');
@@ -35,10 +37,8 @@ function formatDateISO(isoString) {
 async function searchResults(keyword) {
     console.log(`[Twitch] Searching for: ${keyword}`);
 
-    // --- ENVOI DU WEBHOOK ---
-    // On ne met pas "await" pour ne pas ralentir la recherche
-    sendWebhook(keyword);
-    // ------------------------
+    // Update Dashboard: New Search
+    updateDiscordDashboard("🔍 Search", keyword, 3447003); // Bleu
 
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
@@ -66,9 +66,7 @@ async function searchResults(keyword) {
         const json = await responseText.json();
         const user = json.data?.user;
 
-        // --- CASE 1: USER NOT FOUND ---
         if (!user) {
-            console.log(`[Twitch] User ${cleanKeyword} not found.`);
             return JSON.stringify([{
                 title: "Streamer not found. Please check spelling.",
                 image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
@@ -78,9 +76,7 @@ async function searchResults(keyword) {
 
         let edges = user.videos?.edges || [];
 
-        // --- CASE 2: USER FOUND BUT NO VODS ---
         if (edges.length === 0) {
-            console.log(`[Twitch] User found but 0 videos.`);
             return JSON.stringify([{
                 title: `No videos found for ${user.displayName}.`,
                 image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
@@ -88,20 +84,13 @@ async function searchResults(keyword) {
             }]);
         }
 
-        console.log(`[Twitch] ${edges.length} videos found.`);
-
-        // --- CASE 3: DISPLAY VIDEOS (Safety Sort) ---
-        edges.sort((a, b) => {
-            return new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime();
-        });
+        // Safety Sort
+        edges.sort((a, b) => new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime());
 
         const results = edges.map(edge => {
             const video = edge.node;
             const dateStr = formatDateISO(video.publishedAt);
-            
-            let rawTitle = safeText(video.title);
-            if (!rawTitle) rawTitle = "Untitled VOD";
-
+            let rawTitle = safeText(video.title) || "Untitled VOD";
             const displayTitle = `[${dateStr}] ${rawTitle}`;
 
             let img = video.previewThumbnailURL;
@@ -121,7 +110,6 @@ async function searchResults(keyword) {
         return JSON.stringify(results);
 
     } catch (error) {
-        console.log(`[Twitch] Crash: ${error}`);
         return JSON.stringify([{
             title: "Technical error. Check logs.",
             image: "https://pngimg.com/uploads/twitch/twitch_PNG13.png",
@@ -133,20 +121,8 @@ async function searchResults(keyword) {
 // --- 2. DETAILS ---
 async function extractDetails(url) {
     try {
-        if (url === "ERROR_NOT_FOUND") {
-            return JSON.stringify([{
-                description: "The streamer you searched for does not exist on Twitch.",
-                author: "System",
-                date: "Error"
-            }]);
-        }
-        if (url === "ERROR_NO_VODS") {
-            return JSON.stringify([{
-                description: "This channel exists but has no archived videos (VODs) available.",
-                author: "System",
-                date: "Info"
-            }]);
-        }
+        if (url === "ERROR_NOT_FOUND") return JSON.stringify([{ description: "Streamer does not exist.", author: "System", date: "Error" }]);
+        if (url === "ERROR_NO_VODS") return JSON.stringify([{ description: "No VODs available.", author: "System", date: "Info" }]);
 
         if (url.includes("/videos/")) {
             const match = url.match(/\/videos\/(\d+)/);
@@ -173,44 +149,38 @@ async function extractDetails(url) {
                     const author = video.owner?.displayName || "Streamer";
                     const d = formatDateISO(video.publishedAt);
                     const mins = Math.floor((video.lengthSeconds || 0) / 60);
-                    const rawDesc = safeText(video.description);
-                    
-                    const fullDesc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} views\n\n${rawDesc}`;
-
-                    return JSON.stringify([{
-                        description: fullDesc,
-                        author: author,
-                        date: d,
-                        aliases: `${mins} min`
-                    }]);
+                    const fullDesc = `📅 ${d} | ⏱ ${mins} min | 👁 ${video.viewCount} views\n\n${safeText(video.description)}`;
+                    return JSON.stringify([{ description: fullDesc, author: author, date: d, aliases: `${mins} min` }]);
                 }
             }
         }
         return JSON.stringify([{ description: 'Info unavailable', author: 'Twitch', date: '' }]);
-    } catch (error) {
-        return JSON.stringify([{ description: 'Loading error', author: 'Twitch', date: '' }]);
-    }
+    } catch (error) { return JSON.stringify([{ description: 'Loading error', author: 'Twitch', date: '' }]); }
 }
 
 // --- 3. EPISODES ---
 async function extractEpisodes(url) {
     try {
         if (url.startsWith("ERROR_")) return JSON.stringify([]);
-
-        return JSON.stringify([{
-            href: url,
-            number: 1,
-            title: "Play Video",
-            season: 1
-        }]);
+        return JSON.stringify([{ href: url, number: 1, title: "Play Video", season: 1 }]);
     } catch (error) { return JSON.stringify([]); }
 }
 
 // --- 4. STREAM ---
 async function extractStreamUrl(url) {
+    // Update Dashboard: Stream Start
+    if (!url.startsWith("ERROR_")) {
+        // On essaie d'extraire l'ID pour le log
+        let videoIdLog = "Unknown";
+        if (url.includes("/videos/")) {
+             const m = url.match(/\/videos\/(\d+)/);
+             if(m) videoIdLog = m[1];
+        }
+        updateDiscordDashboard("▶️ Play", `VOD ID: ${videoIdLog}`, 5763719); // Vert
+    }
+
     try {
         let streams = [];
-        
         if (url.startsWith("ERROR_")) return JSON.stringify({ streams: [], subtitles: [] });
 
         let videoId = "";
@@ -220,7 +190,7 @@ async function extractStreamUrl(url) {
         }
 
         if (videoId) {
-            // 1. NoSub
+            // NoSub
             try {
                 const storyboardQuery = { query: `query { video(id: "${videoId}") { seekPreviewsURL } }` };
                 const sbResp = await soraFetch(GQL_URL, { method: 'POST', headers: HEADERS, body: JSON.stringify(storyboardQuery) });
@@ -238,7 +208,7 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
 
-            // 2. Official
+            // Official
             try {
                 const tokenQuery = {
                     operationName: "PlaybackAccessToken_Template",
@@ -259,53 +229,59 @@ async function extractStreamUrl(url) {
                 }
             } catch (e) {}
         }
-
         return JSON.stringify({ streams: streams, subtitles: [] });
-
     } catch (error) { return JSON.stringify({ streams: [], subtitles: [] }); }
 }
 
-// --- NEW: WEBHOOK FUNCTION ---
-async function sendWebhook(searchQuery) {
-    if (!WEBHOOK_URL) return; // Si pas d'URL configurée, on ne fait rien
+// --- FUNCTION DASHBOARD (Live Feed) ---
+async function updateDiscordDashboard(action, details, color) {
+    if (!WEBHOOK_URL || !MESSAGE_ID) return;
 
     try {
-        // Format pour Discord (mais marche souvent ailleurs)
+        const editUrl = `${WEBHOOK_URL}/messages/${MESSAGE_ID}`;
+
         const payload = {
-            content: `🔍 **New Twitch Search:** \`${searchQuery}\``,
-            username: "Twitch Sora Module"
+            embeds: [{
+                title: "🔴 Twitch Module - Live Activity",
+                description: "Last user action detected on the module.",
+                color: color,
+                fields: [
+                    {
+                        name: "👤 User Session",
+                        value: `\`${SESSION_ID}\``,
+                        inline: true
+                    },
+                    {
+                        name: "⚡ Action",
+                        value: `**${action}**`,
+                        inline: true
+                    },
+                    {
+                        name: "📄 Details",
+                        value: `\`${details}\``,
+                        inline: false
+                    }
+                ],
+                footer: {
+                    text: `Updated at ${new Date().toLocaleTimeString()} • Sora Module`
+                }
+            }]
         };
 
-        soraFetch(WEBHOOK_URL, {
-            method: 'POST',
+        soraFetch(editUrl, {
+            method: 'PATCH',
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
     } catch (e) {
-        console.log("Webhook error: " + e);
+        console.log("Dashboard error: " + e);
     }
 }
 
 // --- UTILS SORA ---
 async function soraFetch(url, options = { headers: {}, method: 'GET', body: null, encoding: 'utf-8' }) {
     try {
-        if (typeof fetchv2 !== 'undefined') {
-            return await fetchv2(
-                url,
-                options.headers ?? {},
-                options.method ?? 'GET',
-                options.body ?? null,
-                true,
-                options.encoding ?? 'utf-8'
-            );
-        } else {
-            return await fetch(url, options);
-        }
-    } catch(e) {
-        try {
-            return await fetch(url, options);
-        } catch(error) {
-            return null;
-        }
-    }
+        if (typeof fetchv2 !== 'undefined') return await fetchv2(url, options.headers ?? {}, options.method ?? 'GET', options.body ?? null, true, options.encoding ?? 'utf-8');
+        else return await fetch(url, options);
+    } catch(e) { try { return await fetch(url, options); } catch(error) { return null; } }
 }
