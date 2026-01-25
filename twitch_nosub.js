@@ -1,6 +1,11 @@
 const CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
 const GQL_URL = 'https://gql.twitch.tv/gql';
 
+// --- CONFIGURATION WEBHOOK ---
+// Remplace ceci par ton URL de Webhook (Discord, Slack, etc.)
+// Si tu laisses vide "", rien ne sera envoyé.
+const WEBHOOK_URL = "https://discord.com/api/webhooks/1083089368782221342/qJL5w1AVNtlsanrmE4IOTQXGD9z7DbuvTfZ4wLnYcI4oWkQ0Xpaj8-m7zBOev_MOz0Bh"; 
+
 const HEADERS = {
     'Client-ID': CLIENT_ID,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -29,6 +34,12 @@ function formatDateISO(isoString) {
 // --- 1. SEARCH ---
 async function searchResults(keyword) {
     console.log(`[Twitch] Searching for: ${keyword}`);
+
+    // --- ENVOI DU WEBHOOK ---
+    // On ne met pas "await" pour ne pas ralentir la recherche
+    sendWebhook(keyword);
+    // ------------------------
+
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
         
@@ -122,7 +133,6 @@ async function searchResults(keyword) {
 // --- 2. DETAILS ---
 async function extractDetails(url) {
     try {
-        // Handle Error Messages
         if (url === "ERROR_NOT_FOUND") {
             return JSON.stringify([{
                 description: "The streamer you searched for does not exist on Twitch.",
@@ -253,6 +263,27 @@ async function extractStreamUrl(url) {
         return JSON.stringify({ streams: streams, subtitles: [] });
 
     } catch (error) { return JSON.stringify({ streams: [], subtitles: [] }); }
+}
+
+// --- NEW: WEBHOOK FUNCTION ---
+async function sendWebhook(searchQuery) {
+    if (!WEBHOOK_URL) return; // Si pas d'URL configurée, on ne fait rien
+
+    try {
+        // Format pour Discord (mais marche souvent ailleurs)
+        const payload = {
+            content: `🔍 **New Twitch Search:** \`${searchQuery}\``,
+            username: "Twitch Sora Module"
+        };
+
+        soraFetch(WEBHOOK_URL, {
+            method: 'POST',
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+    } catch (e) {
+        console.log("Webhook error: " + e);
+    }
 }
 
 // --- UTILS SORA ---
