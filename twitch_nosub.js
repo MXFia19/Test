@@ -1,13 +1,13 @@
 const CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
 const GQL_URL = 'https://gql.twitch.tv/gql';
 
-// --- CONFIGURATION DASHBOARD (Multi-User Live Feed) ---
-const WEBHOOK_URL = "https://discord.com/api/webhooks/1083089368782221342/qJL5w1AVNtlsanrmE4IOTQXGD9z7DbuvTfZ4wLnYcI4oWkQ0Xpaj8-m7zBOev_MOz0Bh"; // Ton URL Webhook
-const MESSAGE_ID = "1464832159104635173";  // L'ID du message Discord à modifier
+// --- CONFIGURATION DASHBOARD (DISCORD) ---
+const WEBHOOK_URL = "https://discord.com/api/webhooks/1083089368782221342/qJL5w1AVNtlsanrmE4IOTQXGD9z7DbuvTfZ4wLnYcI4oWkQ0Xpaj8-m7zBOev_MOz0Bh"; 
+const MESSAGE_ID = "1464832159104635173"; 
 
-// Génère un ID unique pour cette session (ex: #4092)
-// Permet de distinguer les utilisateurs sans les tracer
-const SESSION_ID = "#" + Math.floor(Math.random() * 9000 + 1000);
+// --- CONFIGURATION COMPTEUR (COUNTERAPI V2) ---
+const COUNTER_WORKSPACE = "mxfia19s-team-2616";
+const COUNTER_KEY = "ut_ZuEPzqNnk7zMH0ooTeZIzBcnRpLnqWvf26fXcc2D";
 
 const HEADERS = {
     'Client-ID': CLIENT_ID,
@@ -37,8 +37,8 @@ function formatDateISO(isoString) {
 async function searchResults(keyword) {
     console.log(`[Twitch] Searching for: ${keyword}`);
 
-    // Update Dashboard: New Search
-    updateDiscordDashboard("🔍 Search", keyword, 3447003); // Bleu
+    // ACTION: Compteur V2 + Discord
+    handleGlobalCounter("searches", keyword, 3447003); // Bleu
 
     try {
         const cleanKeyword = keyword.trim().toLowerCase();
@@ -84,7 +84,7 @@ async function searchResults(keyword) {
             }]);
         }
 
-        // Safety Sort
+        // Safety Sort (Tri Chronologique - Plus récent en premier)
         edges.sort((a, b) => new Date(b.node.publishedAt).getTime() - new Date(a.node.publishedAt).getTime());
 
         const results = edges.map(edge => {
@@ -168,15 +168,14 @@ async function extractEpisodes(url) {
 
 // --- 4. STREAM ---
 async function extractStreamUrl(url) {
-    // Update Dashboard: Stream Start
+    // ACTION: Compteur V2 + Discord
     if (!url.startsWith("ERROR_")) {
-        // On essaie d'extraire l'ID pour le log
         let videoIdLog = "Unknown";
         if (url.includes("/videos/")) {
              const m = url.match(/\/videos\/(\d+)/);
              if(m) videoIdLog = m[1];
         }
-        updateDiscordDashboard("▶️ Play", `VOD ID: ${videoIdLog}`, 5763719); // Vert
+        handleGlobalCounter("streams", `VOD ID: ${videoIdLog}`, 5763719); // Vert
     }
 
     try {
@@ -233,37 +232,77 @@ async function extractStreamUrl(url) {
     } catch (error) { return JSON.stringify({ streams: [], subtitles: [] }); }
 }
 
-// --- FUNCTION DASHBOARD (Live Feed) ---
-async function updateDiscordDashboard(action, details, color) {
+// --- GESTION COMPTEUR GLOBAL (V2 - Authentifiée) ---
+async function handleGlobalCounter(type, details, color) {
     if (!WEBHOOK_URL || !MESSAGE_ID) return;
+    if (!COUNTER_WORKSPACE || !COUNTER_KEY) {
+        console.log("Missing CounterAPI V2 credentials");
+        return;
+    }
 
+    try {
+        // 1. Incrémenter la valeur (UP)
+        // Note: l'URL V2 nécessite le Workspace
+        const countUrl = `https://api.counterapi.dev/v2/${COUNTER_WORKSPACE}/${type}/up`;
+        
+        const countResp = await soraFetch(countUrl, {
+            method: 'GET', // V2 utilise GET pour up, mais demande le header Authorization
+            headers: {
+                "Authorization": `Bearer ${COUNTER_KEY}`
+            }
+        });
+        const countJson = await countResp.json();
+        const currentCount = countJson.count;
+
+        // 2. Lire l'autre valeur (sans l'incrémenter) pour l'affichage
+        const otherType = (type === "searches") ? "streams" : "searches";
+        const otherUrl = `https://api.counterapi.dev/v2/${COUNTER_WORKSPACE}/${otherType}`;
+        
+        const otherResp = await soraFetch(otherUrl, {
+            method: 'GET',
+            headers: {
+                "Authorization": `Bearer ${COUNTER_KEY}`
+            }
+        });
+        const otherJson = await otherResp.json();
+        const otherCount = otherJson.count || 0;
+
+        const totalSearches = (type === "searches") ? currentCount : otherCount;
+        const totalStreams = (type === "streams") ? currentCount : otherCount;
+
+        // 3. Mise à jour Discord
+        updateDiscordDashboard(type === "searches" ? "🔍 Search" : "▶️ Stream", details, color, totalSearches, totalStreams);
+
+    } catch (e) {
+        console.log("Counter V2 Error: " + e);
+        // Si ça plante, on essaie quand même d'afficher le log Discord sans les totaux
+        updateDiscordDashboard(type === "searches" ? "🔍 Search" : "▶️ Stream", details, color, "?", "?");
+    }
+}
+
+async function updateDiscordDashboard(action, details, color, totalSearches, totalStreams) {
     try {
         const editUrl = `${WEBHOOK_URL}/messages/${MESSAGE_ID}`;
 
         const payload = {
             embeds: [{
-                title: "🔴 Twitch Module - Live Activity",
-                description: "Last user action detected on the module.",
+                title: "🌍 Global Module Stats",
+                description: "Real-time statistics from all users.",
                 color: color,
                 fields: [
                     {
-                        name: "👤 User Session",
-                        value: `\`${SESSION_ID}\``,
-                        inline: true
+                        name: "📊 Global Totals",
+                        value: `Searches: **${totalSearches}**\nStreams: **${totalStreams}**`,
+                        inline: false
                     },
                     {
-                        name: "⚡ Action",
-                        value: `**${action}**`,
-                        inline: true
-                    },
-                    {
-                        name: "📄 Details",
-                        value: `\`${details}\``,
+                        name: "⚡ Latest Action",
+                        value: `**${action}**: \`${details}\``,
                         inline: false
                     }
                 ],
                 footer: {
-                    text: `Updated at ${new Date().toLocaleTimeString()} • Sora Module`
+                    text: `Updated at ${new Date().toLocaleTimeString()}`
                 }
             }]
         };
@@ -274,7 +313,7 @@ async function updateDiscordDashboard(action, details, color) {
             body: JSON.stringify(payload)
         });
     } catch (e) {
-        console.log("Dashboard error: " + e);
+        console.log("Dashboard update error: " + e);
     }
 }
 
